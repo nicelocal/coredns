@@ -3,15 +3,19 @@ package cache
 import (
 	"context"
 	"math"
+	"net"
 	"time"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metadata"
 	"github.com/coredns/coredns/plugin/metrics"
 	"github.com/coredns/coredns/request"
+	"github.com/infobloxopen/go-trees/iptree"
 
 	"github.com/miekg/dns"
 )
+
+var zeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
 
 // ServeDNS implements the plugin.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -34,10 +38,39 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	// in which upstream doesn't support DNSSEC, the two cache items will effectively be the same. Regardless, any
 	// DNSSEC RRs in the response are written to cache with the response.
 
+	subnet := &zeroSubnet
+	o := r.IsEdns0()
+	if o != nil {
+		for k, s := range o.Option {
+			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
+				var mask net.IPMask
+				if ecs.Family == 1 {
+					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4)
+					mask = net.CIDRMask(int(ecs.SourceNetmask), 32)
+				} else {
+					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v6)
+					mask = net.CIDRMask(int(ecs.SourceNetmask), 128)
+				}
+				if ecs.SourceNetmask == 0 {
+					// Remove EDNS option (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.2)
+					o.Option[k] = o.Option[len(o.Option)-1]
+					o.Option = o.Option[:len(o.Option)-1]
+					break
+				}
+				ecs.Address = ecs.Address.Mask(mask)
+				subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
+				break
+			}
+		}
+	}
+
+	// TODO: Retry resolving without EDNS0 data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
+
 	ttl := 0
-	i := c.getIgnoreTTL(now, state, server)
+	i := c.getIgnoreTTL(now, state, subnet, server)
 	if i == nil {
 		crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, ad: ad, cd: cd,
+			subnet:  subnet,
 			nexcept: c.nexcept, pexcept: c.pexcept, wildcardFunc: wildcardFunc(ctx)}
 		return c.doRefresh(ctx, state, crr)
 	}
@@ -56,13 +89,13 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		// Adjust the time to get a 0 TTL in the reply built from a stale item.
 		now = now.Add(time.Duration(ttl) * time.Second)
 		if !c.verifyStale {
-			cw := newPrefetchResponseWriter(server, state, c)
-			go c.doPrefetch(ctx, state, cw, i, now)
+			cw := newPrefetchResponseWriter(server, state, subnet, c)
+			go c.doPrefetch(ctx, state, cw, i, subnet, now)
 		}
 		servedStale.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	} else if c.shouldPrefetch(i, now) {
-		cw := newPrefetchResponseWriter(server, state, c)
-		go c.doPrefetch(ctx, state, cw, i, now)
+		cw := newPrefetchResponseWriter(server, state, subnet, c)
+		go c.doPrefetch(ctx, state, cw, i, subnet, now)
 	}
 
 	if i.wildcard != "" {
@@ -92,14 +125,14 @@ func wildcardFunc(ctx context.Context) func() string {
 	}
 }
 
-func (c *Cache) doPrefetch(ctx context.Context, state request.Request, cw *ResponseWriter, i *item, now time.Time) {
+func (c *Cache) doPrefetch(ctx context.Context, state request.Request, cw *ResponseWriter, i *item, subnet *net.IPNet, now time.Time) {
 	cachePrefetches.WithLabelValues(cw.server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	c.doRefresh(ctx, state, cw)
 
 	// When prefetching we loose the item i, and with it the frequency
 	// that we've gathered sofar. See we copy the frequencies info back
 	// into the new item that was stored in the cache.
-	if i1 := c.exists(state); i1 != nil {
+	if i1 := c.exists(state, subnet); i1 != nil {
 		i1.Freq.Reset(now, i.Freq.Hits())
 	}
 }
@@ -121,37 +154,56 @@ func (c *Cache) shouldPrefetch(i *item, now time.Time) bool {
 func (c *Cache) Name() string { return "cache" }
 
 // getIgnoreTTL unconditionally returns an item if it exists in the cache.
-func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, server string) *item {
+func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.IPNet, server string) *item {
 	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled)
 	cacheRequests.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 
 	if i, ok := c.ncache.Get(k); ok {
-		itm := i.(*item)
-		ttl := itm.ttl(now)
-		if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
-			cacheHits.WithLabelValues(server, Denial, c.zonesMetricLabel, c.viewMetricLabel).Inc()
-			return i.(*item)
+		tree := i.(*iptree.Tree)
+		if ii, ok := tree.GetByNet(subnet); ok {
+			itm := ii.(*item)
+			ttl := itm.ttl(now)
+			if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
+				cacheHits.WithLabelValues(server, Denial, c.zonesMetricLabel, c.viewMetricLabel).Inc()
+				return itm
+			}
 		}
 	}
 	if i, ok := c.pcache.Get(k); ok {
-		itm := i.(*item)
-		ttl := itm.ttl(now)
-		if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
-			cacheHits.WithLabelValues(server, Success, c.zonesMetricLabel, c.viewMetricLabel).Inc()
-			return i.(*item)
+		tree := i.(*iptree.Tree)
+		if ii, ok := tree.GetByNet(subnet); ok {
+			itm := ii.(*item)
+			ttl := itm.ttl(now)
+			if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
+				cacheHits.WithLabelValues(server, Success, c.zonesMetricLabel, c.viewMetricLabel).Inc()
+				return itm
+			}
 		}
 	}
+	if subnet != &zeroSubnet {
+		return c.getIgnoreTTL(now, state, subnet, server)
+	}
+
 	cacheMisses.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	return nil
 }
 
-func (c *Cache) exists(state request.Request) *item {
+func (c *Cache) exists(state request.Request, subnet *net.IPNet) *item {
 	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled)
 	if i, ok := c.ncache.Get(k); ok {
-		return i.(*item)
+		tree := i.(*iptree.Tree)
+		if ii, ok := tree.GetByNet(subnet); ok {
+			return ii.(*item)
+		}
 	}
 	if i, ok := c.pcache.Get(k); ok {
-		return i.(*item)
+		tree := i.(*iptree.Tree)
+		if ii, ok := tree.GetByNet(subnet); ok {
+			return ii.(*item)
+		}
+	}
+	if subnet != &zeroSubnet {
+		return c.exists(state, &zeroSubnet)
 	}
 	return nil
 }

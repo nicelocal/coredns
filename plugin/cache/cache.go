@@ -11,6 +11,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/dnsutil"
 	"github.com/coredns/coredns/plugin/pkg/response"
 	"github.com/coredns/coredns/request"
+	"github.com/infobloxopen/go-trees/iptree"
 
 	"github.com/miekg/dns"
 )
@@ -34,6 +35,9 @@ type Cache struct {
 	pttl    time.Duration
 	minpttl time.Duration
 	failttl time.Duration // TTL for caching SERVFAIL responses
+
+	mask_v4 uint8
+	mask_v6 uint8
 
 	// Prefetch.
 	prefetch   int
@@ -73,6 +77,8 @@ func New() *Cache {
 		duration:   1 * time.Minute,
 		percentage: 10,
 		now:        time.Now,
+		mask_v4:    32,
+		mask_v6:    128,
 	}
 }
 
@@ -133,6 +139,7 @@ type ResponseWriter struct {
 	*Cache
 	state  request.Request
 	server string // Server handling the request.
+	subnet *net.IPNet
 
 	do         bool // When true the original request had the DO bit set.
 	cd         bool // When true the original request had the CD bit set.
@@ -149,7 +156,7 @@ type ResponseWriter struct {
 // newPrefetchResponseWriter returns a Cache ResponseWriter to be used in
 // prefetch requests. It ensures RemoteAddr() can be called even after the
 // original connection has already been closed.
-func newPrefetchResponseWriter(server string, state request.Request, c *Cache) *ResponseWriter {
+func newPrefetchResponseWriter(server string, state request.Request, subnet *net.IPNet, c *Cache) *ResponseWriter {
 	// Resolve the address now, the connection might be already closed when the
 	// actual prefetch request is made.
 	addr := state.W.RemoteAddr()
@@ -169,6 +176,7 @@ func newPrefetchResponseWriter(server string, state request.Request, c *Cache) *
 		cd:             state.Req.CheckingDisabled,
 		prefetch:       true,
 		remoteAddr:     addr,
+		subnet:         subnet,
 	}
 }
 
@@ -236,16 +244,28 @@ func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, duration 
 			// zone is in exception list, do not cache
 			return
 		}
+		var tree *iptree.Tree
+		if _tree, ok := w.pcache.Get(key); ok {
+			tree = _tree.(*iptree.Tree)
+		} else {
+			tree = iptree.NewTree()
+		}
+
 		i := newItem(m, w.now(), duration)
 		if w.wildcardFunc != nil {
 			i.wildcard = w.wildcardFunc()
 		}
-		if w.pcache.Add(key, i) {
+		if w.pcache.Add(key, tree.InsertNet(w.subnet, i)) {
 			evictions.WithLabelValues(w.server, Success, w.zonesMetricLabel, w.viewMetricLabel).Inc()
 		}
 		// when pre-fetching, remove the negative cache entry if it exists
 		if w.prefetch {
-			w.ncache.Remove(key)
+			if _tree, ok := w.ncache.Get(key); ok {
+				tree = _tree.(*iptree.Tree)
+				if tree, ok = tree.DeleteByNet(w.subnet); ok {
+					w.ncache.Add(key, tree)
+				}
+			}
 		}
 
 	case response.NameError, response.NoData, response.ServerError:
@@ -253,11 +273,17 @@ func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, duration 
 			// zone is in exception list, do not cache
 			return
 		}
+		var tree *iptree.Tree
+		if _tree, ok := w.ncache.Get(key); ok {
+			tree = _tree.(*iptree.Tree)
+		} else {
+			tree = iptree.NewTree()
+		}
 		i := newItem(m, w.now(), duration)
 		if w.wildcardFunc != nil {
 			i.wildcard = w.wildcardFunc()
 		}
-		if w.ncache.Add(key, i) {
+		if w.ncache.Add(key, tree.InsertNet(w.subnet, i)) {
 			evictions.WithLabelValues(w.server, Denial, w.zonesMetricLabel, w.viewMetricLabel).Inc()
 		}
 
