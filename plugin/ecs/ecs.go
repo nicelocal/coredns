@@ -74,8 +74,31 @@ func (e *Ecs) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (i
 	}
 	ecs.SourceScope = 0
 
-	return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+	return plugin.NextOrFailure(e.Name(), e.Next, ctx, &ecsWriter{w}, r)
 }
 
 // Name implements the Handler interface.
 func (e *Ecs) Name() string { return "ecs" }
+
+// ecsWriter removes the ECS option from responses to requests that DID NOT originally include one
+// See https://www.rfc-editor.org/rfc/rfc7871#section-7.2.2
+type ecsWriter struct {
+	dns.ResponseWriter
+}
+
+// WriteMsg implements the dns.ResponseWriter interface.
+func (w *ecsWriter) WriteMsg(res *dns.Msg) error {
+	// Remove ECS option
+
+	o := res.IsEdns0()
+	if o != nil {
+		for k, s := range o.Option {
+			if _, ok := s.(*dns.EDNS0_SUBNET); ok {
+				o.Option[k] = o.Option[len(o.Option)-1]
+				o.Option = o.Option[:len(o.Option)-1]
+			}
+		}
+	}
+
+	return w.ResponseWriter.WriteMsg(res)
+}
