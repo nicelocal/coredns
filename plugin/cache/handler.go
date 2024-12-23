@@ -40,9 +40,11 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 
 	subnet := &zeroSubnet
 	o := r.IsEdns0()
+	var ecs *dns.EDNS0_SUBNET
+	var ok bool
 	if o != nil {
 		for _, s := range o.Option {
-			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
+			if ecs, ok = s.(*dns.EDNS0_SUBNET); ok {
 				var mask net.IPMask
 				if ecs.Family == 1 {
 					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4)
@@ -67,6 +69,7 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	if i == nil {
 		crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, ad: ad, cd: cd,
 			subnet:  subnet,
+			ecs:     ecs,
 			nexcept: c.nexcept, pexcept: c.pexcept, wildcardFunc: wildcardFunc(ctx)}
 		return c.doRefresh(ctx, state, crr)
 	}
@@ -74,7 +77,9 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	if ttl < 0 {
 		// serve stale behavior
 		if c.verifyStale {
-			crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, cd: cd}
+			crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, cd: cd,
+				subnet: subnet,
+				ecs:    ecs}
 			cw := newVerifyStaleResponseWriter(crr)
 			ret, err := c.doRefresh(ctx, state, cw)
 			if cw.refreshed {
@@ -85,12 +90,12 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		// Adjust the time to get a 0 TTL in the reply built from a stale item.
 		now = now.Add(time.Duration(ttl) * time.Second)
 		if !c.verifyStale {
-			cw := newPrefetchResponseWriter(server, state, subnet, c)
+			cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
 			go c.doPrefetch(ctx, state, cw, i, subnet, now)
 		}
 		servedStale.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	} else if c.shouldPrefetch(i, now) {
-		cw := newPrefetchResponseWriter(server, state, subnet, c)
+		cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
 		go c.doPrefetch(ctx, state, cw, i, subnet, now)
 	}
 
