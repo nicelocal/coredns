@@ -140,6 +140,7 @@ type ResponseWriter struct {
 	state  request.Request
 	server string // Server handling the request.
 	subnet *net.IPNet
+	ecs    *dns.EDNS0_SUBNET
 
 	do         bool // When true the original request had the DO bit set.
 	cd         bool // When true the original request had the CD bit set.
@@ -156,7 +157,7 @@ type ResponseWriter struct {
 // newPrefetchResponseWriter returns a Cache ResponseWriter to be used in
 // prefetch requests. It ensures RemoteAddr() can be called even after the
 // original connection has already been closed.
-func newPrefetchResponseWriter(server string, state request.Request, subnet *net.IPNet, c *Cache) *ResponseWriter {
+func newPrefetchResponseWriter(server string, state request.Request, subnet *net.IPNet, ecs *dns.EDNS0_SUBNET, c *Cache) *ResponseWriter {
 	// Resolve the address now, the connection might be already closed when the
 	// actual prefetch request is made.
 	addr := state.W.RemoteAddr()
@@ -177,6 +178,7 @@ func newPrefetchResponseWriter(server string, state request.Request, subnet *net
 		prefetch:       true,
 		remoteAddr:     addr,
 		subnet:         subnet,
+		ecs:            ecs,
 	}
 }
 
@@ -190,6 +192,31 @@ func (w *ResponseWriter) RemoteAddr() net.Addr {
 
 // WriteMsg implements the dns.ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
+	o := res.IsEdns0()
+	if o != nil && w.ecs != nil {
+		for _, s := range o.Option {
+			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
+				// https://www.rfc-editor.org/rfc/rfc7871#section-7.3
+				// If FAMILY, SOURCE PREFIX-LENGTH, and SOURCE PREFIX-LENGTH bits of
+				// ADDRESS in the response don't match the non-zero fields in the
+				// corresponding query, the full response MUST be dropped.
+				if ecs.Family != w.ecs.Family {
+					return nil
+				}
+				if w.ecs.SourceNetmask == 0 {
+					break
+				}
+				if ecs.SourceNetmask != w.ecs.SourceNetmask {
+					return nil
+				}
+				if !ecs.Address.Mask(w.subnet.Mask).Equal(w.ecs.Address) {
+					return nil
+				}
+				break
+			}
+		}
+	}
+
 	mt, _ := response.Typify(res, w.now().UTC())
 
 	// key returns empty string for anything we don't want to cache.
