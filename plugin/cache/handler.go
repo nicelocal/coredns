@@ -41,7 +41,7 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	subnet := &zeroSubnet
 	o := r.IsEdns0()
 	if o != nil {
-		for k, s := range o.Option {
+		for _, s := range o.Option {
 			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
 				var mask net.IPMask
 				if ecs.Family == 1 {
@@ -51,20 +51,16 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v6)
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 128)
 				}
-				if ecs.SourceNetmask == 0 {
-					// Remove EDNS option (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.2)
-					o.Option[k] = o.Option[len(o.Option)-1]
-					o.Option = o.Option[:len(o.Option)-1]
-					break
-				}
 				ecs.Address = ecs.Address.Mask(mask)
-				subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
+				if ecs.SourceNetmask != 0 {
+					subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
+				}
 				break
 			}
 		}
 	}
 
-	// TODO: Retry resolving without EDNS0 data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
+	// TODO: Retry resolving without ECS data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
 
 	ttl := 0
 	i := c.getIgnoreTTL(now, state, subnet, server)
