@@ -193,28 +193,82 @@ func (w *ResponseWriter) RemoteAddr() net.Addr {
 // WriteMsg implements the dns.ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	o := res.IsEdns0()
-	if o != nil && w.ecs != nil {
+	subnet := w.subnet
+	hadEcs := false
+	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
+				hadEcs = true
+
 				// https://www.rfc-editor.org/rfc/rfc7871#section-7.3
 				// If FAMILY, SOURCE PREFIX-LENGTH, and SOURCE PREFIX-LENGTH bits of
 				// ADDRESS in the response don't match the non-zero fields in the
 				// corresponding query, the full response MUST be dropped.
+
+				// If the query had no ECS, drop:
+				// the RFC doesn't explicitly require this,
+				// but it seems like the correct behavior.
+				if w.ecs != nil {
+					return nil
+				}
+
 				if ecs.Family != w.ecs.Family {
 					return nil
 				}
-				if w.ecs.SourceNetmask == 0 {
-					break
-				}
+
+				// This part is weird: https://www.rfc-editor.org/rfc/rfc7871#section-11 says that
+				// "the ECS option in a response packet MUST contain the
+				// full FAMILY, ADDRESS, and SOURCE PREFIX-LENGTH fields from the
+				// corresponding query"
+				//
+				// Which means that if there is a mismatch in the source netmask, we must drop;
+				//
+				// but https://www.rfc-editor.org/rfc/rfc7871#section-7.3 says
+				// "If FAMILY, SOURCE PREFIX-LENGTH, and SOURCE PREFIX-LENGTH bits of
+				// ADDRESS in the response don't match the non-zero fields in the
+				// corresponding query, the full response MUST be dropped."
+				//
+				// Which implies that if the source netmask is 0, comparison should be skipped;
+				//
+				// And also
+				// "In a response to a query that specified only SOURCE
+				// PREFIX-LENGTH for privacy masking, the FAMILY and ADDRESS fields MUST
+				// contain the appropriate non-zero information that the Authoritative
+				// Nameserver used to generate the answer, so that it can be cached
+				// accordingly."
+				//
+				// Which also implies that requests with a 0 source prefix may return a non-zero address...
+				//
+				// I choose to be safe, respecting section 11 and dropping all requests with non-matching
+				// source prefix and address, regardless of the mask.
 				if ecs.SourceNetmask != w.ecs.SourceNetmask {
 					return nil
 				}
 				if !ecs.Address.Mask(w.subnet.Mask).Equal(w.ecs.Address) {
 					return nil
 				}
+
+				// If SCOPE PREFIX-LENGTH is not longer than SOURCE PREFIX-LENGTH, store
+				// SCOPE PREFIX-LENGTH bits of ADDRESS, and then mark the response as
+				// valid for all addresses that fall within that range.
+				if ecs.SourceScope <= ecs.SourceNetmask {
+					var mask net.IPMask
+					if ecs.Family == 1 {
+						mask = net.CIDRMask(int(ecs.SourceScope), 32)
+					} else {
+						mask = net.CIDRMask(int(ecs.SourceScope), 128)
+					}
+					subnet = &net.IPNet{
+						IP:   subnet.IP.Mask(mask),
+						Mask: mask,
+					}
+				}
 				break
 			}
 		}
+	}
+	if !hadEcs {
+		subnet = &zeroSubnet
 	}
 
 	mt, _ := response.Typify(res, w.now().UTC())
