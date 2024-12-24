@@ -21,7 +21,7 @@ var zeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
 
 // Use 0.0.0.0/0 as wildcard key for private ECS queries (both v4 and v6)
 // (i.e. those were the client explicitly asked via ECS to not pass our IP to upstreams)
-var privateZeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+var privateZeroSubnet = net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
 
 // ServeDNS implements the plugin.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -66,22 +66,32 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 				// Resolver using this option MUST prepare it as described in
 				// Section 7.1.1, "Recursive Resolvers".
 
+				// Normalize
+				if temp := ecs.Address.To4(); temp != nil {
+					ecs.Address = temp
+				}
+
 				var mask net.IPMask
 				if ecs.Family == 1 {
+					// If SOURCE PREFIX-LENGTH is shorter than the configured maximum and
+					// SCOPE PREFIX-LENGTH is longer than SOURCE PREFIX-LENGTH, store SOURCE
+					// PREFIX-LENGTH bits of ADDRESS, and then mark the response as valid
+					// only to answer client queries that specify exactly the same SOURCE
+					// PREFIX-LENGTH in their own ECS option.
+					//
+					// Weirdly, this means to cache by the requested prefix, instead of the returned one
+					// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
+					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e.
+					// **exact matches only**, do NOT cache for 10.0.0.0/24 or 10.0.1.0/24 even if it falls inside of 10.0.0.0/8
+					//
 					if ecs.SourceNetmask < c.mask_v4_size {
-						exactMatch = &net.IPNet{
-							IP:   ecs.Address.Mask(c.mask_v4),
-							Mask: c.mask_v4,
-						}
+						exactMatch = &net.IPNet{IP: ecs.Address, Mask: net.CIDRMask(int(ecs.SourceNetmask), 32)}
 					}
 					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4_size)
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 32)
 				} else {
 					if ecs.SourceNetmask < c.mask_v6_size {
-						exactMatch = &net.IPNet{
-							IP:   ecs.Address.Mask(c.mask_v6),
-							Mask: c.mask_v6,
-						}
+						exactMatch = &net.IPNet{IP: ecs.Address, Mask: net.CIDRMask(int(ecs.SourceNetmask), 128)}
 					}
 					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v6_size)
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 128)
@@ -104,6 +114,11 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	}
 	if i, ok := ip.(*net.TCPAddr); ok {
 		srcOrig = i.IP
+	}
+
+	// Normalize
+	if temp := srcOrig.To4(); temp != nil {
+		srcOrig = temp
 	}
 
 	// TODO: Retry resolving without ECS data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
@@ -218,36 +233,23 @@ func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.I
 			return i
 		}
 	} else {
-		if srcOrig.Mask(subnet.Mask).Equal(subnet.IP) {
-			// 2.1. If there was an ECS option specifying SOURCE PREFIX-LENGTH and
-			// ADDRESS covering the client's address, the client address is used
-			// but SOURCE PREFIX-LENGTH is initially ignored. (same as above)
-
-			i := c.getIgnoreTTLInner(k, now, state, srcOrig, server, justCheckExists)
-			if i != nil {
-				return i
-			}
-			//
-			// 2.2. If no covering entry is found and SOURCE PREFIX-LENGTH is shorter than the
-			// configured maximum length allowed for the cache, repeat the cache
-			// lookup for an entry that exactly matches SOURCE PREFIX-LENGTH.
-			// These special entries, which do not cover longer prefix lengths,
-			// occur as described in the previous section.
-
-			if exactMatch != &zeroSubnet {
-				subK := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, exactMatch)
-				i := c.getIgnoreTTLInner(subK, now, state, srcOrig, server, justCheckExists)
-				if i != nil {
-					return i
-				}
-			}
-		}
-		// 3. If there was an ECS option with an ADDRESS, the ADDRESS from it
-		// MAY be used if the local policy allows.
-
 		i := c.getIgnoreTTLInner(k, now, state, subnet.IP, server, justCheckExists)
 		if i != nil {
 			return i
+		}
+		//
+		// 2.2. If no covering entry is found and SOURCE PREFIX-LENGTH is shorter than the
+		// configured maximum length allowed for the cache, repeat the cache
+		// lookup for an entry that exactly matches SOURCE PREFIX-LENGTH.
+		// These special entries, which do not cover longer prefix lengths,
+		// occur as described in the previous section.
+
+		if exactMatch != &zeroSubnet {
+			subK := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, exactMatch)
+			i := c.getIgnoreTTLInner(subK, now, state, subnet.IP, server, justCheckExists)
+			if i != nil {
+				return i
+			}
 		}
 	}
 
