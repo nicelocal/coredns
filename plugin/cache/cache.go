@@ -144,10 +144,11 @@ func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
 type ResponseWriter struct {
 	dns.ResponseWriter
 	*Cache
-	state  request.Request
-	server string // Server handling the request.
-	subnet *net.IPNet
-	ecs    *dns.EDNS0_SUBNET
+	state      request.Request
+	server     string // Server handling the request.
+	subnet     *net.IPNet
+	exactMatch *net.IPNet
+	ecs        *dns.EDNS0_SUBNET
 
 	do         bool // When true the original request had the DO bit set.
 	cd         bool // When true the original request had the CD bit set.
@@ -164,7 +165,7 @@ type ResponseWriter struct {
 // newPrefetchResponseWriter returns a Cache ResponseWriter to be used in
 // prefetch requests. It ensures RemoteAddr() can be called even after the
 // original connection has already been closed.
-func newPrefetchResponseWriter(server string, state request.Request, subnet *net.IPNet, ecs *dns.EDNS0_SUBNET, c *Cache) *ResponseWriter {
+func newPrefetchResponseWriter(server string, state request.Request, subnet *net.IPNet, exactMatch *net.IPNet, ecs *dns.EDNS0_SUBNET, c *Cache) *ResponseWriter {
 	// Resolve the address now, the connection might be already closed when the
 	// actual prefetch request is made.
 	addr := state.W.RemoteAddr()
@@ -185,6 +186,7 @@ func newPrefetchResponseWriter(server string, state request.Request, subnet *net
 		prefetch:       true,
 		remoteAddr:     addr,
 		subnet:         subnet,
+		exactMatch:     exactMatch,
 		ecs:            ecs,
 	}
 }
@@ -202,7 +204,6 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	o := res.IsEdns0()
 	subnet := w.subnet
 	hadEcs := false
-	exactMatch := &zeroSubnet
 	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
@@ -216,7 +217,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 				// If the query had no ECS, drop:
 				// the RFC doesn't explicitly require this,
 				// but it seems like the correct behavior.
-				if w.ecs != nil {
+				if w.ecs == nil {
 					return nil
 				}
 
@@ -333,18 +334,8 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e.
 					// **exact matches only**, do NOT cache for 10.0.0.0/24 or 10.0.1.0/24 even if it falls inside of 10.0.0.0/8
 					//
-					if ecs.Family == 1 && ecs.SourceNetmask < w.mask_v4_size {
-						exactMatch = &net.IPNet{
-							IP:   w.subnet.IP.Mask(w.mask_v4),
-							Mask: w.mask_v4,
-						}
-						subnet = exactMatch
-					} else if ecs.Family == 2 && ecs.SourceNetmask < w.mask_v6_size {
-						exactMatch = &net.IPNet{
-							IP:   w.subnet.IP.Mask(w.mask_v6),
-							Mask: w.mask_v6,
-						}
-						subnet = exactMatch
+					if w.exactMatch != &zeroSubnet {
+						subnet = w.exactMatch
 					}
 				}
 
@@ -363,7 +354,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	mt, _ := response.Typify(res, w.now().UTC())
 
 	// key returns empty string for anything we don't want to cache.
-	hasKey, key := key(w.state.Name(), exactMatch, res, mt, w.do, w.cd)
+	hasKey, key := key(w.state.Name(), w.exactMatch, res, mt, w.do, w.cd)
 
 	msgTTL := dnsutil.MinimalTTL(res, mt)
 	var duration time.Duration
