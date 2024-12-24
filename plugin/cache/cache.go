@@ -36,8 +36,6 @@ type Cache struct {
 	minpttl time.Duration
 	failttl time.Duration // TTL for caching SERVFAIL responses
 
-	mask_v4      net.IPMask
-	mask_v6      net.IPMask
 	mask_v4_size uint8
 	mask_v6_size uint8
 
@@ -79,8 +77,6 @@ func New() *Cache {
 		duration:     1 * time.Minute,
 		percentage:   10,
 		now:          time.Now,
-		mask_v4:      net.CIDRMask(32, 32),
-		mask_v6:      net.CIDRMask(128, 128),
 		mask_v4_size: 32,
 		mask_v6_size: 128,
 	}
