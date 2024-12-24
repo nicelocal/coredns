@@ -2,7 +2,6 @@
 package cache
 
 import (
-	"fmt"
 	"hash/fnv"
 	"net"
 	"time"
@@ -397,7 +396,6 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 }
 
 func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, subnet *net.IPNet, duration time.Duration) {
-	fmt.Println("Caching for ", subnet.String())
 	// duration is expected > 0
 	// and key is valid
 	switch mt {

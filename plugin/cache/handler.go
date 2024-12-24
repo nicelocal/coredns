@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"net"
 	"time"
@@ -21,7 +20,7 @@ var zeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
 
 // Use 0.0.0.0/0 as wildcard key for private ECS queries (both v4 and v6)
 // (i.e. those were the client explicitly asked via ECS to not pass our IP to upstreams)
-var privateZeroSubnet = net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
+var privateZeroSubnet = net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}
 
 // ServeDNS implements the plugin.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -218,8 +217,6 @@ func (c *Cache) Name() string { return "cache" }
 // getIgnoreTTL unconditionally returns an item if it exists in the cache.
 func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.IPNet, exactMatch *net.IPNet, srcOrig net.IP, server string, justCheckExists bool) *item {
 	cacheRequests.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
-
-	fmt.Println("Fetching for ", subnet.String())
 
 	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, &zeroSubnet)
 
