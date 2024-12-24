@@ -3,6 +3,7 @@ package cache
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -223,7 +224,8 @@ func cacheParse(c *caddy.Controller) (*Cache, error) {
 				if d < 0 || d > 32 {
 					return nil, errors.New("invalid IPv4 mask size")
 				}
-				ca.mask_v4 = uint8(d)
+				ca.mask_v4_size = uint8(d)
+				ca.mask_v4 = net.CIDRMask(d, 32)
 			case "mask_v6":
 				args := c.RemainingArgs()
 				if len(args) != 1 {
@@ -236,7 +238,8 @@ func cacheParse(c *caddy.Controller) (*Cache, error) {
 				if d < 0 || d > 128 {
 					return nil, errors.New("invalid IPv6 mask size")
 				}
-				ca.mask_v6 = uint8(d)
+				ca.mask_v6_size = uint8(d)
+				ca.mask_v6 = net.CIDRMask(d, 128)
 			case "disable":
 				// disable [success|denial] [zones]...
 				args := c.RemainingArgs()

@@ -37,8 +37,10 @@ type Cache struct {
 	minpttl time.Duration
 	failttl time.Duration // TTL for caching SERVFAIL responses
 
-	mask_v4 uint8
-	mask_v6 uint8
+	mask_v4      net.IPMask
+	mask_v6      net.IPMask
+	mask_v4_size uint8
+	mask_v6_size uint8
 
 	// Prefetch.
 	prefetch   int
@@ -64,29 +66,31 @@ type Cache struct {
 // caller to set the Next handler.
 func New() *Cache {
 	return &Cache{
-		Zones:      []string{"."},
-		pcap:       defaultCap,
-		pcache:     cache.New(defaultCap),
-		pttl:       maxTTL,
-		minpttl:    minTTL,
-		ncap:       defaultCap,
-		ncache:     cache.New(defaultCap),
-		nttl:       maxNTTL,
-		minnttl:    minNTTL,
-		failttl:    minNTTL,
-		prefetch:   0,
-		duration:   1 * time.Minute,
-		percentage: 10,
-		now:        time.Now,
-		mask_v4:    32,
-		mask_v6:    128,
+		Zones:        []string{"."},
+		pcap:         defaultCap,
+		pcache:       cache.New(defaultCap),
+		pttl:         maxTTL,
+		minpttl:      minTTL,
+		ncap:         defaultCap,
+		ncache:       cache.New(defaultCap),
+		nttl:         maxNTTL,
+		minnttl:      minNTTL,
+		failttl:      minNTTL,
+		prefetch:     0,
+		duration:     1 * time.Minute,
+		percentage:   10,
+		now:          time.Now,
+		mask_v4:      net.CIDRMask(32, 32),
+		mask_v6:      net.CIDRMask(128, 128),
+		mask_v4_size: 32,
+		mask_v6_size: 128,
 	}
 }
 
 // key returns key under which we store the item, -1 will be returned if we don't store the message.
 // Currently we do not cache Truncated, errors zone transfers or dynamic update messages.
 // qname holds the already lowercased qname.
-func key(qname string, m *dns.Msg, t response.Type, do, cd bool) (bool, uint64) {
+func key(qname string, exactMatch *net.IPNet, m *dns.Msg, t response.Type, do, cd bool) (bool, uint64) {
 	// We don't store truncated responses.
 	if m.Truncated {
 		return false, 0
@@ -96,13 +100,13 @@ func key(qname string, m *dns.Msg, t response.Type, do, cd bool) (bool, uint64) 
 		return false, 0
 	}
 
-	return true, hash(qname, m.Question[0].Qtype, do, cd)
+	return true, hash(qname, m.Question[0].Qtype, do, cd, exactMatch)
 }
 
 var one = []byte("1")
 var zero = []byte("0")
 
-func hash(qname string, qtype uint16, do, cd bool) uint64 {
+func hash(qname string, qtype uint16, do, cd bool, exactMatch *net.IPNet) uint64 {
 	h := fnv.New64()
 
 	if do {
@@ -117,6 +121,8 @@ func hash(qname string, qtype uint16, do, cd bool) uint64 {
 		h.Write(zero)
 	}
 
+	h.Write(exactMatch.IP)
+	h.Write(exactMatch.Mask)
 	h.Write([]byte{byte(qtype >> 8)})
 	h.Write([]byte{byte(qtype)})
 	h.Write([]byte(qname))
@@ -196,6 +202,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	o := res.IsEdns0()
 	subnet := w.subnet
 	hadEcs := false
+	exactMatch := &zeroSubnet
 	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok := s.(*dns.EDNS0_SUBNET); ok {
@@ -280,7 +287,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 					}
 				} else if ecs.SourceScope > ecs.SourceNetmask {
 					// req 10.0.0.0/8, resp valid only for 10.0.0.0/24 (and not i.e. 10.0.0.1/24, which is in 10.0.0.0/8)
-					//
+
 					// A SCOPE PREFIX-LENGTH value longer than SOURCE PREFIX-LENGTH
 					// indicates that the provided prefix length was not specific enough to
 					// select the most appropriate Tailored Response.  Future queries for
@@ -323,11 +330,22 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 					//
 					// Weirdly, this means to cache by the requested prefix, instead of the returned one
 					// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
-					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e. a
-					// strange way of saying to cache for 10.0.0.0/8
+					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e.
+					// **exact matches only**, do NOT cache for 10.0.0.0/24 or 10.0.1.0/24 even if it falls inside of 10.0.0.0/8
 					//
-					// Implemented by default (subnet = w.subnet)
-
+					if ecs.Family == 1 && ecs.SourceNetmask < w.mask_v4_size {
+						exactMatch = &net.IPNet{
+							IP:   w.subnet.IP.Mask(w.mask_v4),
+							Mask: w.mask_v4,
+						}
+						subnet = exactMatch
+					} else if ecs.Family == 2 && ecs.SourceNetmask < w.mask_v6_size {
+						exactMatch = &net.IPNet{
+							IP:   w.subnet.IP.Mask(w.mask_v6),
+							Mask: w.mask_v6,
+						}
+						subnet = exactMatch
+					}
 				}
 
 				break
@@ -345,7 +363,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	mt, _ := response.Typify(res, w.now().UTC())
 
 	// key returns empty string for anything we don't want to cache.
-	hasKey, key := key(w.state.Name(), res, mt, w.do, w.cd)
+	hasKey, key := key(w.state.Name(), exactMatch, res, mt, w.do, w.cd)
 
 	msgTTL := dnsutil.MinimalTTL(res, mt)
 	var duration time.Duration

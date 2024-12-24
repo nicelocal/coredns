@@ -48,6 +48,7 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	o := r.IsEdns0()
 	var ecs *dns.EDNS0_SUBNET
 	var ok bool
+	var exactMatch *net.IPNet
 	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok = s.(*dns.EDNS0_SUBNET); ok {
@@ -67,10 +68,22 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 
 				var mask net.IPMask
 				if ecs.Family == 1 {
-					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4)
+					if ecs.SourceNetmask < c.mask_v4_size {
+						exactMatch = &net.IPNet{
+							IP:   ecs.Address.Mask(c.mask_v4),
+							Mask: c.mask_v4,
+						}
+					}
+					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4_size)
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 32)
 				} else {
-					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v6)
+					if ecs.SourceNetmask < c.mask_v6_size {
+						exactMatch = &net.IPNet{
+							IP:   ecs.Address.Mask(c.mask_v6),
+							Mask: c.mask_v6,
+						}
+					}
+					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v6_size)
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 128)
 				}
 				ecs.Address = ecs.Address.Mask(mask)
@@ -84,10 +97,19 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		}
 	}
 
+	var srcOrig net.IP
+	ip := w.RemoteAddr()
+	if i, ok := ip.(*net.UDPAddr); ok {
+		srcOrig = i.IP
+	}
+	if i, ok := ip.(*net.TCPAddr); ok {
+		srcOrig = i.IP
+	}
+
 	// TODO: Retry resolving without ECS data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
 
 	ttl := 0
-	i := c.getIgnoreTTL(now, state, subnet, server)
+	i := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, false)
 	if i == nil {
 		crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, ad: ad, cd: cd,
 			subnet:  subnet,
@@ -113,12 +135,12 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		now = now.Add(time.Duration(ttl) * time.Second)
 		if !c.verifyStale {
 			cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
-			go c.doPrefetch(ctx, state, cw, i, subnet, now)
+			go c.doPrefetch(ctx, state, cw, i, subnet, exactMatch, srcOrig, now, server)
 		}
 		servedStale.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	} else if c.shouldPrefetch(i, now) {
 		cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
-		go c.doPrefetch(ctx, state, cw, i, subnet, now)
+		go c.doPrefetch(ctx, state, cw, i, subnet, exactMatch, srcOrig, now, server)
 	}
 
 	if i.wildcard != "" {
@@ -148,14 +170,14 @@ func wildcardFunc(ctx context.Context) func() string {
 	}
 }
 
-func (c *Cache) doPrefetch(ctx context.Context, state request.Request, cw *ResponseWriter, i *item, subnet *net.IPNet, now time.Time) {
+func (c *Cache) doPrefetch(ctx context.Context, state request.Request, cw *ResponseWriter, i *item, subnet *net.IPNet, exactMatch *net.IPNet, srcOrig net.IP, now time.Time, server string) {
 	cachePrefetches.WithLabelValues(cw.server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	c.doRefresh(ctx, state, cw)
 
 	// When prefetching we loose the item i, and with it the frequency
 	// that we've gathered sofar. See we copy the frequencies info back
 	// into the new item that was stored in the cache.
-	if i1 := c.exists(state, subnet); i1 != nil {
+	if i1 := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, true); i1 != nil {
 		i1.Freq.Reset(now, i.Freq.Hits())
 	}
 }
@@ -177,16 +199,68 @@ func (c *Cache) shouldPrefetch(i *item, now time.Time) bool {
 func (c *Cache) Name() string { return "cache" }
 
 // getIgnoreTTL unconditionally returns an item if it exists in the cache.
-func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.IPNet, server string) *item {
-	fmt.Println("Fetching for ", subnet.String())
-
-	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled)
+func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.IPNet, exactMatch *net.IPNet, srcOrig net.IP, server string, justCheckExists bool) *item {
 	cacheRequests.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 
+	fmt.Println("Fetching for ", subnet.String())
+
+	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, &zeroSubnet)
+
+	// ECS, answering from cache
+	//
+	// 1. If no ECS option was provided, the client's address is used.
+	//
+	if subnet == nil {
+		i := c.getIgnoreTTLInner(k, now, state, srcOrig, server, justCheckExists)
+		if i != nil {
+			return i
+		}
+	} else {
+		if srcOrig.Mask(subnet.Mask).Equal(subnet.IP) {
+			// 2.1. If there was an ECS option specifying SOURCE PREFIX-LENGTH and
+			// ADDRESS covering the client's address, the client address is used
+			// but SOURCE PREFIX-LENGTH is initially ignored. (same as above)
+
+			i := c.getIgnoreTTLInner(k, now, state, srcOrig, server, justCheckExists)
+			if i != nil {
+				return i
+			}
+			//
+			// 2.2. If no covering entry is found and SOURCE PREFIX-LENGTH is shorter than the
+			// configured maximum length allowed for the cache, repeat the cache
+			// lookup for an entry that exactly matches SOURCE PREFIX-LENGTH.
+			// These special entries, which do not cover longer prefix lengths,
+			// occur as described in the previous section.
+
+			if exactMatch != nil {
+				subK := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, exactMatch)
+				i := c.getIgnoreTTLInner(subK, now, state, srcOrig, server, justCheckExists)
+				if i != nil {
+					return i
+				}
+			}
+		}
+		// 3. If there was an ECS option with an ADDRESS, the ADDRESS from it
+		// MAY be used if the local policy allows.
+
+		i := c.getIgnoreTTLInner(k, now, state, subnet.IP, server, justCheckExists)
+		if i != nil {
+			return i
+		}
+	}
+
+	cacheMisses.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
+	return nil
+}
+
+func (c *Cache) getIgnoreTTLInner(k uint64, now time.Time, state request.Request, src net.IP, server string, justCheckExists bool) *item {
 	if i, ok := c.ncache.Get(k); ok {
 		tree := i.(*iptree.Tree)
-		if ii, ok := tree.GetByNet(subnet); ok {
+		if ii, ok := tree.GetByIP(src); ok {
 			itm := ii.(*item)
+			if justCheckExists {
+				return itm
+			}
 			ttl := itm.ttl(now)
 			if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
 				cacheHits.WithLabelValues(server, Denial, c.zonesMetricLabel, c.viewMetricLabel).Inc()
@@ -196,8 +270,11 @@ func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.I
 	}
 	if i, ok := c.pcache.Get(k); ok {
 		tree := i.(*iptree.Tree)
-		if ii, ok := tree.GetByNet(subnet); ok {
+		if ii, ok := tree.GetByIP(src); ok {
 			itm := ii.(*item)
+			if justCheckExists {
+				return itm
+			}
 			ttl := itm.ttl(now)
 			if itm.matches(state) && (ttl > 0 || (c.staleUpTo > 0 && -ttl < int(c.staleUpTo.Seconds()))) {
 				cacheHits.WithLabelValues(server, Success, c.zonesMetricLabel, c.viewMetricLabel).Inc()
@@ -205,30 +282,6 @@ func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.I
 			}
 		}
 	}
-	if subnet != &zeroSubnet {
-		return c.getIgnoreTTL(now, state, &zeroSubnet, server)
-	}
 
-	cacheMisses.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
-	return nil
-}
-
-func (c *Cache) exists(state request.Request, subnet *net.IPNet) *item {
-	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled)
-	if i, ok := c.ncache.Get(k); ok {
-		tree := i.(*iptree.Tree)
-		if ii, ok := tree.GetByNet(subnet); ok {
-			return ii.(*item)
-		}
-	}
-	if i, ok := c.pcache.Get(k); ok {
-		tree := i.(*iptree.Tree)
-		if ii, ok := tree.GetByNet(subnet); ok {
-			return ii.(*item)
-		}
-	}
-	if subnet != &zeroSubnet {
-		return c.exists(state, &zeroSubnet)
-	}
 	return nil
 }
