@@ -260,10 +260,9 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 				// If SCOPE PREFIX-LENGTH is not longer than SOURCE PREFIX-LENGTH, store
 				// SCOPE PREFIX-LENGTH bits of ADDRESS, and then mark the response as
 				// valid for all addresses that fall within that range.
-				if ecs.SourceScope < ecs.SourceNetmask {
-					// req 10.0.0.0/8, resp 10.0.0.0/24
+				if ecs.SourceScope < ecs.SourceNetmask { // The ecs.SourceScope == ecs.SourceNetmask case is handled by default
+					// req 10.0.0.0/24, resp valid for 10.0.0.0/8
 
-					// The ecs.SourceScope == ecs.SourceNetmask case is handled by default
 					if ecs.SourceScope == 0 {
 						subnet = &zeroSubnet
 						break
@@ -278,31 +277,57 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 						IP:   subnet.IP.Mask(mask),
 						Mask: mask,
 					}
-				} else if ecs.SourceNetmask < ecs.SourceScope {
-					// req 10.0.0.0/24, resp 10.0.0.0/8
+				} else if ecs.SourceScope > ecs.SourceNetmask {
+					// req 10.0.0.0/8, resp valid only for 10.0.0.0/24 (and not i.e. 10.0.0.1/24, which is in 10.0.0.0/8)
+					//
+					// A SCOPE PREFIX-LENGTH value longer than SOURCE PREFIX-LENGTH
+					// indicates that the provided prefix length was not specific enough to
+					// select the most appropriate Tailored Response.  Future queries for
+					// the name within the specified network SHOULD use the longer SCOPE
+					// PREFIX-LENGTH.  Factors affecting whether the Recursive Resolver
+					// would use the longer length include the amount of privacy masking the
+					// operator wants to provide their users, and the additional resource
+					// implications for the cache.
+					//
+					// If an Intermediate Nameserver receives a response that has a longer
+					// SCOPE PREFIX-LENGTH than SOURCE PREFIX-LENGTH that it provided in its
+					// query, it SHOULD still provide the result as the answer to the
+					// triggering client request even if the client is in a different
+					// address range.
+					//
+					//
+					// TODO: The Intermediate Nameserver MAY instead opt to retry
+					// with a longer SOURCE PREFIX-LENGTH to get a better reply before
+					// responding to its client, as long as it does not exceed a SOURCE
+					// PREFIX-LENGTH specified in the query that triggered resolution, but
+					// this obviously has implications for the latency of the overall
+					// lookup.
+
+					// Cache implications:
+
+					// Similarly, if SOURCE PREFIX-LENGTH is the maximum configured for the
+					// cache, store SOURCE PREFIX-LENGTH bits of ADDRESS, and then mark the
+					// response as valid for all addresses that fall within that range.
+					//
+					// Weirdly, this means to cache by the requested prefix, instead of the returned one.
+					// i.e. req: 10.0.0.0/8 (max is 8), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
+					//
+					// Implemented by default (subnet = w.subnet)
+
+					// If SOURCE PREFIX-LENGTH is shorter than the configured maximum and
+					// SCOPE PREFIX-LENGTH is longer than SOURCE PREFIX-LENGTH, store SOURCE
+					// PREFIX-LENGTH bits of ADDRESS, and then mark the response as valid
+					// only to answer client queries that specify exactly the same SOURCE
+					// PREFIX-LENGTH in their own ECS option.
+					//
+					// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one
+					// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
+					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e. a
+					// strange way of saying to cache for 10.0.0.0/8
+					//
+					// Implemented by default (subnet = w.subnet)
+
 				}
-
-				// Similarly, if SOURCE PREFIX-LENGTH is the maximum configured for the
-				// cache, store SOURCE PREFIX-LENGTH bits of ADDRESS, and then mark the
-				// response as valid for all addresses that fall within that range.
-				//
-				// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one.
-				// i.e. req: 10.0.0.0/8 (max is 8), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
-				//
-				// Not implementing for now.
-
-				// If SOURCE PREFIX-LENGTH is shorter than the configured maximum and
-				// SCOPE PREFIX-LENGTH is longer than SOURCE PREFIX-LENGTH, store SOURCE
-				// PREFIX-LENGTH bits of ADDRESS, and then mark the response as valid
-				// only to answer client queries that specify exactly the same SOURCE
-				// PREFIX-LENGTH in their own ECS option.
-				//
-				// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one
-				// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
-				// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e. a
-				// strange way of saying to cache for 10.0.0.0/8
-				//
-				// Not implementing for now.
 
 				break
 			}
