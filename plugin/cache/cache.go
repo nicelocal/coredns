@@ -244,14 +244,30 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 				if ecs.SourceNetmask != w.ecs.SourceNetmask {
 					return nil
 				}
-				if !ecs.Address.Mask(w.subnet.Mask).Equal(w.ecs.Address) {
+				if !ecs.Address.Equal(w.ecs.Address) {
 					return nil
+				}
+
+				// Records that are cached as /0 because of a query's SOURCE PREFIX-
+				// LENGTH of 0 MUST be distinguished from those that are cached as /0
+				// because of a response's SCOPE PREFIX-LENGTH of 0.  The former should
+				// only be used for other /0 queries that the Intermediate Resolver
+				// receives, but the latter is suitable as a response for all networks.
+				if w.ecs.SourceNetmask == 0 {
+					subnet = &privateZeroSubnet
 				}
 
 				// If SCOPE PREFIX-LENGTH is not longer than SOURCE PREFIX-LENGTH, store
 				// SCOPE PREFIX-LENGTH bits of ADDRESS, and then mark the response as
 				// valid for all addresses that fall within that range.
-				if ecs.SourceScope <= ecs.SourceNetmask {
+				if ecs.SourceScope < ecs.SourceNetmask {
+					// req 10.0.0.0/8, resp 10.0.0.0/24
+
+					// The ecs.SourceScope == ecs.SourceNetmask case is handled by default
+					if ecs.SourceScope == 0 {
+						subnet = &zeroSubnet
+						break
+					}
 					var mask net.IPMask
 					if ecs.Family == 1 {
 						mask = net.CIDRMask(int(ecs.SourceScope), 32)
@@ -262,11 +278,40 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 						IP:   subnet.IP.Mask(mask),
 						Mask: mask,
 					}
+				} else if ecs.SourceNetmask < ecs.SourceScope {
+					// req 10.0.0.0/24, resp 10.0.0.0/8
 				}
+
+				// Similarly, if SOURCE PREFIX-LENGTH is the maximum configured for the
+				// cache, store SOURCE PREFIX-LENGTH bits of ADDRESS, and then mark the
+				// response as valid for all addresses that fall within that range.
+				//
+				// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one.
+				// i.e. req: 10.0.0.0/8 (max is 8), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
+				//
+				// Not implementing for now.
+
+				// If SOURCE PREFIX-LENGTH is shorter than the configured maximum and
+				// SCOPE PREFIX-LENGTH is longer than SOURCE PREFIX-LENGTH, store SOURCE
+				// PREFIX-LENGTH bits of ADDRESS, and then mark the response as valid
+				// only to answer client queries that specify exactly the same SOURCE
+				// PREFIX-LENGTH in their own ECS option.
+				//
+				// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one
+				// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
+				// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e. a
+				// strange way of saying to cache for 10.0.0.0/8
+				//
+				// Not implementing for now.
+
 				break
 			}
 		}
 	}
+
+	// If no ECS option is contained in the response, the Intermediate
+	// Nameserver SHOULD treat this as being equivalent to having received a
+	// SCOPE PREFIX-LENGTH of 0
 	if !hadEcs {
 		subnet = &zeroSubnet
 	}
@@ -288,7 +333,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 
 	if hasKey && duration > 0 {
 		if w.state.Match(res) {
-			w.set(res, key, mt, duration)
+			w.set(res, key, mt, subnet, duration)
 			cacheSize.WithLabelValues(w.server, Success, w.zonesMetricLabel, w.viewMetricLabel).Set(float64(w.pcache.Len()))
 			cacheSize.WithLabelValues(w.server, Denial, w.zonesMetricLabel, w.viewMetricLabel).Set(float64(w.ncache.Len()))
 		} else {
@@ -316,7 +361,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(res)
 }
 
-func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, duration time.Duration) {
+func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, subnet *net.IPNet, duration time.Duration) {
 	// duration is expected > 0
 	// and key is valid
 	switch mt {
@@ -336,14 +381,14 @@ func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, duration 
 		if w.wildcardFunc != nil {
 			i.wildcard = w.wildcardFunc()
 		}
-		if w.pcache.Add(key, tree.InsertNet(w.subnet, i)) {
+		if w.pcache.Add(key, tree.InsertNet(subnet, i)) {
 			evictions.WithLabelValues(w.server, Success, w.zonesMetricLabel, w.viewMetricLabel).Inc()
 		}
 		// when pre-fetching, remove the negative cache entry if it exists
 		if w.prefetch {
 			if _tree, ok := w.ncache.Get(key); ok {
 				tree = _tree.(*iptree.Tree)
-				if tree, ok = tree.DeleteByNet(w.subnet); ok {
+				if tree, ok = tree.DeleteByNet(subnet); ok {
 					w.ncache.Add(key, tree)
 				}
 			}
@@ -364,7 +409,7 @@ func (w *ResponseWriter) set(m *dns.Msg, key uint64, mt response.Type, duration 
 		if w.wildcardFunc != nil {
 			i.wildcard = w.wildcardFunc()
 		}
-		if w.ncache.Add(key, tree.InsertNet(w.subnet, i)) {
+		if w.ncache.Add(key, tree.InsertNet(subnet, i)) {
 			evictions.WithLabelValues(w.server, Denial, w.zonesMetricLabel, w.viewMetricLabel).Inc()
 		}
 

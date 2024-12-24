@@ -15,7 +15,12 @@ import (
 	"github.com/miekg/dns"
 )
 
+// Use ::/0 as wildcard key for queries without ECS (both v4 and v6)
 var zeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+
+// Use 0.0.0.0/0 as wildcard key for private ECS queries (both v4 and v6)
+// (i.e. those were the client explicitly asked via ECS to not pass our IP to upstreams)
+var privateZeroSubnet = net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
 
 // ServeDNS implements the plugin.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -54,7 +59,9 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 					mask = net.CIDRMask(int(ecs.SourceNetmask), 128)
 				}
 				ecs.Address = ecs.Address.Mask(mask)
-				if ecs.SourceNetmask != 0 {
+				if ecs.SourceNetmask == 0 {
+					subnet = &privateZeroSubnet
+				} else {
 					subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
 				}
 				break
