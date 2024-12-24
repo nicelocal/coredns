@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net"
 	"time"
@@ -50,6 +51,20 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok = s.(*dns.EDNS0_SUBNET); ok {
+				// Section 7.1.1, "Recursive Resolvers".
+				// If the triggering query included an ECS option itself, it MUST be
+				// examined for its SOURCE PREFIX-LENGTH.  The Recursive Resolver's
+				// outgoing query MUST then set SOURCE PREFIX-LENGTH to the shorter of
+				// the incoming query's SOURCE PREFIX-LENGTH or the server's maximum
+				// cacheable prefix length.
+
+				// Section 7.1.3, "Forwarding Resolvers".
+				// Forwarding Resolvers essentially appear to be Stub Resolvers to
+				// whatever Recursive Resolver is ultimately handling the query, but
+				// they look like a Recursive Resolver to their client.  A Forwarding
+				// Resolver using this option MUST prepare it as described in
+				// Section 7.1.1, "Recursive Resolvers".
+
 				var mask net.IPMask
 				if ecs.Family == 1 {
 					ecs.SourceNetmask = min(ecs.SourceNetmask, c.mask_v4)
@@ -163,6 +178,8 @@ func (c *Cache) Name() string { return "cache" }
 
 // getIgnoreTTL unconditionally returns an item if it exists in the cache.
 func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.IPNet, server string) *item {
+	fmt.Println("Fetching for ", subnet.String())
+
 	k := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled)
 	cacheRequests.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 
@@ -189,7 +206,7 @@ func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.I
 		}
 	}
 	if subnet != &zeroSubnet {
-		return c.getIgnoreTTL(now, state, subnet, server)
+		return c.getIgnoreTTL(now, state, &zeroSubnet, server)
 	}
 
 	cacheMisses.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
