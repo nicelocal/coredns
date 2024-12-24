@@ -320,7 +320,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 					// only to answer client queries that specify exactly the same SOURCE
 					// PREFIX-LENGTH in their own ECS option.
 					//
-					// TODO: ^^ makes no sense: caching by the requested prefix, instead of the returned one
+					// Weirdly, this means to cache by the requested prefix, instead of the returned one
 					// i.e. req: 10.0.0.0/8 (max is 16), response covers only 10.0.0.0/24, cache for 10.0.0.0/8
 					// and only for queries that have an ECS option with subnet /8 and address 10.0.0.0, i.e. a
 					// strange way of saying to cache for 10.0.0.0/8
