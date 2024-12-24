@@ -48,7 +48,7 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	o := r.IsEdns0()
 	var ecs *dns.EDNS0_SUBNET
 	var ok bool
-	var exactMatch *net.IPNet
+	exactMatch := &zeroSubnet
 	if o != nil {
 		for _, s := range o.Option {
 			if ecs, ok = s.(*dns.EDNS0_SUBNET); ok {
@@ -112,9 +112,10 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	i := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, false)
 	if i == nil {
 		crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, ad: ad, cd: cd,
-			subnet:  subnet,
-			ecs:     ecs,
-			nexcept: c.nexcept, pexcept: c.pexcept, wildcardFunc: wildcardFunc(ctx)}
+			subnet:     subnet,
+			exactMatch: exactMatch,
+			ecs:        ecs,
+			nexcept:    c.nexcept, pexcept: c.pexcept, wildcardFunc: wildcardFunc(ctx)}
 		return c.doRefresh(ctx, state, crr)
 	}
 	ttl = i.ttl(now)
@@ -122,8 +123,9 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		// serve stale behavior
 		if c.verifyStale {
 			crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, cd: cd,
-				subnet: subnet,
-				ecs:    ecs}
+				subnet:     subnet,
+				exactMatch: exactMatch,
+				ecs:        ecs}
 			cw := newVerifyStaleResponseWriter(crr)
 			ret, err := c.doRefresh(ctx, state, cw)
 			if cw.refreshed {
@@ -134,12 +136,12 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		// Adjust the time to get a 0 TTL in the reply built from a stale item.
 		now = now.Add(time.Duration(ttl) * time.Second)
 		if !c.verifyStale {
-			cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
+			cw := newPrefetchResponseWriter(server, state, subnet, exactMatch, ecs, c)
 			go c.doPrefetch(ctx, state, cw, i, subnet, exactMatch, srcOrig, now, server)
 		}
 		servedStale.WithLabelValues(server, c.zonesMetricLabel, c.viewMetricLabel).Inc()
 	} else if c.shouldPrefetch(i, now) {
-		cw := newPrefetchResponseWriter(server, state, subnet, ecs, c)
+		cw := newPrefetchResponseWriter(server, state, subnet, exactMatch, ecs, c)
 		go c.doPrefetch(ctx, state, cw, i, subnet, exactMatch, srcOrig, now, server)
 	}
 
@@ -232,7 +234,7 @@ func (c *Cache) getIgnoreTTL(now time.Time, state request.Request, subnet *net.I
 			// These special entries, which do not cover longer prefix lengths,
 			// occur as described in the previous section.
 
-			if exactMatch != nil {
+			if exactMatch != &zeroSubnet {
 				subK := hash(state.Name(), state.QType(), state.Do(), state.Req.CheckingDisabled, exactMatch)
 				i := c.getIgnoreTTLInner(subK, now, state, srcOrig, server, justCheckExists)
 				if i != nil {
