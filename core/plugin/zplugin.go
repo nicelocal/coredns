@@ -58,4 +58,8 @@ import (
 	_ "github.com/coredns/coredns/plugin/tsig"
 	_ "github.com/coredns/coredns/plugin/view"
 	_ "github.com/coredns/coredns/plugin/whoami"
+
+	_ "github.com/nicelocal/better_template"
+	_ "github.com/nicelocal/ecs_remap"
+	_ "github.com/nicelocal/servfail"
 )
