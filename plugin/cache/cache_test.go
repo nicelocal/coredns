@@ -558,7 +558,18 @@ func TestNegativeStaleMaskingPositiveCache(t *testing.T) {
 	// Confirm that prefetch removes the negative cache item.
 	waitFor := 3
 	for i := 1; i <= waitFor; i++ {
-		if c.ncache.Len() != 0 {
+		isEmpty := true
+		c.ncache.Walk(func(sub map[uint64]interface{}, _ uint64) bool {
+			for _, _value := range sub {
+				value := _value.(*iptree.Tree)
+				for range value.Enumerate() {
+					isEmpty = false
+					return false
+				}
+			}
+			return true
+		})
+		if !isEmpty {
 			if i == waitFor {
 				t.Errorf("Test 2 NOERROR from Backend: item still exists in negative cache")
 			}
