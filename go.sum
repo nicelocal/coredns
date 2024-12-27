@@ -267,8 +267,8 @@ github.com/nicelocal/better_template v1.1.1 h1:eJZLn/jbhpU1iPRTqUeZv75zZBv33fQjn
 github.com/nicelocal/better_template v1.1.1/go.mod h1:+zgteic3OoE/gIf4mG9KCAlKnjn/tm8ykML2uJRQ+DE=
 github.com/nicelocal/ecs_remap v0.1.3 h1:qhZn5upZUIIaHgr7XniqYYmNsGp427s6dzWDAZcqKo4=
 github.com/nicelocal/ecs_remap v0.1.3/go.mod h1:g0c3tdX3dM6ZrF+Rk6FwUKW3ZJvBfEVmnn2nCl5pkDg=
-github.com/nicelocal/servfail v0.1.0 h1:GY8zNyfWBGyvaBkhb8BHAFyMv+NB9ne4l+I/J/jaOKc=
-github.com/nicelocal/servfail v0.1.0/go.mod h1:XRKwu94/sU6Xp/os/YHyyBK8guazX5KIdmW7lBXasJg=
+github.com/nicelocal/servfail v0.1.1 h1:cWwvXx/xs3JdSO8ejr3WQMl4vJboTzi1Xut3c/s3xF8=
+github.com/nicelocal/servfail v0.1.1/go.mod h1:XRKwu94/sU6Xp/os/YHyyBK8guazX5KIdmW7lBXasJg=
 github.com/onsi/ginkgo/v2 v2.22.0 h1:Yed107/8DjTr0lKCNt7Dn8yQ6ybuDRQoMGrNFKzMfHg=
 github.com/onsi/ginkgo/v2 v2.22.0/go.mod h1:7Du3c42kxCUegi0IImZ1wUQzMBVecgIHjR1C+NkhLQo=
 github.com/onsi/gomega v1.34.2 h1:pNCwDkzrsv7MS9kpaQvVb1aVLahQXyJ/Tv5oAZMI3i8=
