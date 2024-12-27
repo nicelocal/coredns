@@ -21,7 +21,7 @@ require (
 	github.com/miekg/dns v1.1.62
 	github.com/nicelocal/better_template v1.1.1
 	github.com/nicelocal/ecs_remap v0.1.3
-	github.com/nicelocal/servfail v0.0.0-20241226114317-db2f467ab00c
+	github.com/nicelocal/servfail v0.1.0
 	github.com/opentracing/opentracing-go v1.2.0
 	github.com/openzipkin-contrib/zipkin-go-opentracing v0.5.0
 	github.com/openzipkin/zipkin-go v0.4.3
