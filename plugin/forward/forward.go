@@ -110,6 +110,7 @@ func (f *Forward) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		for k, s := range o.Option {
 			if _, ok := s.(*dns.EDNS0_SUBNET); ok {
 				ecsKey = k
+				break
 			}
 		}
 	}
