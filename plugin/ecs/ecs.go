@@ -96,6 +96,7 @@ func (w *ecsWriter) WriteMsg(res *dns.Msg) error {
 			if _, ok := s.(*dns.EDNS0_SUBNET); ok {
 				o.Option[k] = o.Option[len(o.Option)-1]
 				o.Option = o.Option[:len(o.Option)-1]
+				break
 			}
 		}
 	}
