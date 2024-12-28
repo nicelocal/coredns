@@ -120,8 +120,6 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		srcOrig = temp
 	}
 
-	// TODO: Retry resolving without ECS data if REFUSED is returned (https://www.rfc-editor.org/rfc/rfc7871#section-7.1.3)
-
 	ttl := 0
 	i := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, false)
 	if i == nil {
