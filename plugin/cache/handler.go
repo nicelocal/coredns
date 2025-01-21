@@ -10,7 +10,6 @@ import (
 	"github.com/coredns/coredns/plugin/metadata"
 	"github.com/coredns/coredns/plugin/metrics"
 	"github.com/coredns/coredns/request"
-	"github.com/infobloxopen/go-trees/iptree"
 
 	"github.com/infobloxopen/go-trees/iptree"
 	"github.com/miekg/dns"
