@@ -12,6 +12,7 @@ import (
 	"github.com/coredns/coredns/request"
 	"github.com/infobloxopen/go-trees/iptree"
 
+	"github.com/infobloxopen/go-trees/iptree"
 	"github.com/miekg/dns"
 )
 
