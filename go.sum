@@ -263,8 +263,8 @@ github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9G
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/nicelocal/better_template v1.3.0 h1:PRiwkx3boAtE97ERRr37rxxbTS6eVUpiBZFzSu5A788=
-github.com/nicelocal/better_template v1.3.0/go.mod h1:ovI/vGzO/+wgv1oEucunN+ubR4jWBL5/xpAVBQk9dDs=
+github.com/nicelocal/better_template v1.3.2 h1:T5XrGp8Ms9GvOxFV99caqNKaFov1naeO18bTSEQr4Ac=
+github.com/nicelocal/better_template v1.3.2/go.mod h1:ovI/vGzO/+wgv1oEucunN+ubR4jWBL5/xpAVBQk9dDs=
 github.com/nicelocal/ecs_remap v0.1.3 h1:qhZn5upZUIIaHgr7XniqYYmNsGp427s6dzWDAZcqKo4=
 github.com/nicelocal/ecs_remap v0.1.3/go.mod h1:g0c3tdX3dM6ZrF+Rk6FwUKW3ZJvBfEVmnn2nCl5pkDg=
 github.com/nicelocal/servfail v0.1.1 h1:cWwvXx/xs3JdSO8ejr3WQMl4vJboTzi1Xut3c/s3xF8=

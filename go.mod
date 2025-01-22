@@ -19,7 +19,7 @@ require (
 	github.com/infobloxopen/go-trees v0.0.0-20200715205103-96a057b8dfb9
 	github.com/matttproud/golang_protobuf_extensions v1.0.4
 	github.com/miekg/dns v1.1.62
-	github.com/nicelocal/better_template v1.3.0
+	github.com/nicelocal/better_template v1.3.2
 	github.com/nicelocal/ecs_remap v0.1.3
 	github.com/nicelocal/servfail v0.1.1
 	github.com/opentracing/opentracing-go v1.2.0
@@ -30,7 +30,6 @@ require (
 	github.com/prometheus/client_model v0.6.1
 	github.com/prometheus/common v0.61.0
 	github.com/quic-go/quic-go v0.48.2
-	github.com/v2fly/v2ray-core/v5 v5.23.0
 	go.etcd.io/etcd/api/v3 v3.5.17
 	go.etcd.io/etcd/client/v3 v3.5.17
 	go.uber.org/automaxprocs v1.6.0
@@ -132,6 +131,7 @@ require (
 	github.com/secure-systems-lab/go-securesystemslib v0.7.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tinylib/msgp v1.2.1 // indirect
+	github.com/v2fly/v2ray-core/v5 v5.23.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.17 // indirect
 	go.opencensus.io v0.24.0 // indirect
