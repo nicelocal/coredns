@@ -120,7 +120,6 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		srcOrig = temp
 	}
 
-	ttl := 0
 	i := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, false)
 	if i == nil {
 		crr := &ResponseWriter{ResponseWriter: w, Cache: c, state: state, server: server, do: do, ad: ad, cd: cd,
@@ -130,7 +129,7 @@ func (c *Cache) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 			nexcept:    c.nexcept, pexcept: c.pexcept, wildcardFunc: wildcardFunc(ctx)}
 		return c.doRefresh(ctx, state, crr)
 	}
-	ttl = i.ttl(now)
+	ttl := i.ttl(now)
 	if ttl < 0 {
 		// serve stale behavior
 		if c.verifyStale {
@@ -192,7 +191,7 @@ func (c *Cache) doPrefetch(ctx context.Context, state request.Request, cw *Respo
 	// that we've gathered sofar. See we copy the frequencies info back
 	// into the new item that was stored in the cache.
 	if i1 := c.getIgnoreTTL(now, state, subnet, exactMatch, srcOrig, server, true); i1 != nil {
-		i1.Reset(now, i.Freq.Hits())
+		i1.Reset(now, i.Hits())
 	}
 }
 
